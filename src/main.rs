@@ -8,7 +8,7 @@ use std::{
 use rusb::{Context, Device, DeviceDescriptor, DeviceHandle, Result, UsbContext};
 
 use bytemuck::{cast_ref, Pod, Zeroable};
-use log::{debug, info};
+use log::{debug, error, info};
 
 use iui::controls::{Checkbox, HorizontalBox, Label, Slider, VerticalBox};
 use iui::prelude::*;
@@ -342,7 +342,8 @@ impl<T: UsbContext> PU<T> {
 
         debug!("setting {} to {:?}", control.name, &buf[0..4]);
 
-        self.device_handle
+        let _ = self
+            .device_handle
             .write_control(
                 SET_ENTITY_OR_INTERFACE,
                 SET_CUR,
@@ -351,7 +352,9 @@ impl<T: UsbContext> PU<T> {
                 &buf,
                 timeout,
             )
-            .unwrap();
+            .map_err(|e| {
+                error!("update failed: {:?}", e);
+            });
     }
 }
 #[derive(Debug)]
