@@ -9,8 +9,9 @@ edition = "2018"
 [dependencies]
 anyhow = "1.0.40"
 bytemuck = {version = "1.5.1", features = ["derive"]}
-iui = "0.3.0"
+iui = { git = "https://github.com/rust-native-ui/libui-rs.git", branch="trunk" }
 log = "0.4.14"
+once_cell = "1.7.2"
 pretty_env_logger = "0.4.0"
 rusb = "0.8.0"
 
