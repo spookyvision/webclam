@@ -258,8 +258,20 @@ struct ControlValue {
 
 struct PU<T: UsbContext> {
     device_handle: DeviceHandle<T>,
+    interface_number: u8,
+    has_kernel_driver: bool,
     controls: Vec<ControlValue>,
     index: u16,
+}
+
+impl<T: UsbContext> Drop for PU<T> {
+    fn drop(&mut self) {
+        if self.has_kernel_driver {
+            self.device_handle
+                .attach_kernel_driver(self.interface_number)
+                .ok();
+        }
+    }
 }
 
 impl<T: UsbContext> fmt::Debug for PU<T> {
@@ -275,6 +287,8 @@ impl<T: UsbContext> fmt::Debug for PU<T> {
 impl<T: UsbContext> PU<T> {
     fn new(
         device_handle: DeviceHandle<T>,
+        interface_number: u8,
+        has_kernel_driver: bool,
         controls: &[&Control],
         interface: u8,
         unit: u8,
@@ -283,6 +297,8 @@ impl<T: UsbContext> PU<T> {
 
         let mut pu = Self {
             device_handle,
+            interface_number,
+            has_kernel_driver,
             controls: Vec::default(),
             index,
         };
@@ -570,6 +586,7 @@ fn open_device<T: UsbContext>(
                     .ok()
             );
         }
+
         return Ok((device_desc, handle));
     }
 
@@ -653,8 +670,18 @@ fn build_pu<T: UsbContext>(
                             );
                             let c = &pu.bmControls;
 
+                            let interface_number = interface.number();
+                            let has_kernel_driver =
+                                match handle.kernel_driver_active(interface_number) {
+                                    Ok(true) => {
+                                        handle.detach_kernel_driver(interface_number).ok();
+                                        true
+                                    }
+                                    _ => false,
+                                };
+
                             handle
-                                .claim_interface(interface.number())
+                                .claim_interface(interface_number)
                                 .map_err(|e| anyhow!("could not claim interface: {}", e))?;
 
                             let interface = interface_desc.interface_number();
@@ -663,6 +690,8 @@ fn build_pu<T: UsbContext>(
                             let flags = u32::from_le_bytes([c[0], c[1], c[2], 0]);
                             let pu = PU::new(
                                 handle,
+                                interface_number,
+                                has_kernel_driver,
                                 CONTROLS
                                     .iter()
                                     .filter(|&control| control.is_supported(flags))
