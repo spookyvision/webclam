@@ -653,7 +653,9 @@ fn build_pu<T: UsbContext>(
                             );
                             let c = &pu.bmControls;
 
-                            handle.claim_interface(interface.number()).unwrap();
+                            handle
+                                .claim_interface(interface.number())
+                                .map_err(|e| anyhow!("could not claim interface: {}", e))?;
 
                             let interface = interface_desc.interface_number();
                             let unit = pu.bUnitID;
