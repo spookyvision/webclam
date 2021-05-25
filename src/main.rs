@@ -536,12 +536,13 @@ fn gui<T: UsbContext + 'static>(pu: PU<T>) {
                 (checkbox.into(), "")
             }
         };
-        input_vbox.append(&ui, widget, LayoutStrategy::Compact);
 
         if !label_text.is_empty() {
             let label = Label::new(&ui, label_text);
             input_vbox.append(&ui, label.clone(), LayoutStrategy::Compact);
         }
+
+        input_vbox.append(&ui, widget, LayoutStrategy::Compact);
     }
 
     let mut reset = Button::new(&ui, "Reset to defaults");
