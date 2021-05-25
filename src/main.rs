@@ -1,5 +1,4 @@
 use std::{
-    borrow::Borrow,
     convert::{TryFrom, TryInto},
     fmt,
     mem::size_of,
