@@ -556,41 +556,42 @@ fn open_device<T: UsbContext>(
     context: &mut T,
     device: &Device<T>,
 ) -> anyhow::Result<(DeviceDescriptor, DeviceHandle<T>)> {
-    if let Ok(handle) = device.open() {
-        let device_desc = device.device_descriptor()?;
-        let timeout = Duration::from_secs(1);
-        let languages = handle.read_languages(timeout)?;
+    return match device.open() {
+        Err(e) => Err(anyhow!("could not open device: {}", e)),
+        Ok(handle) => {
+            let device_desc = device.device_descriptor()?;
+            let timeout = Duration::from_secs(1);
+            let languages = handle.read_languages(timeout)?;
 
-        debug!("Active configuration: {}", handle.active_configuration()?);
-        debug!("Languages: {:?}", languages);
+            debug!("Active configuration: {}", handle.active_configuration()?);
+            debug!("Languages: {:?}", languages);
 
-        if languages.len() > 0 {
-            let language = languages[0];
+            if languages.len() > 0 {
+                let language = languages[0];
 
-            info!(
-                "Manufacturer: {:?}",
-                handle
-                    .read_manufacturer_string(language, &device_desc, timeout)
-                    .ok()
-            );
-            info!(
-                "Product: {:?}",
-                handle
-                    .read_product_string(language, &device_desc, timeout)
-                    .ok()
-            );
-            info!(
-                "Serial Number: {:?}",
-                handle
-                    .read_serial_number_string(language, &device_desc, timeout)
-                    .ok()
-            );
+                info!(
+                    "Manufacturer: {:?}",
+                    handle
+                        .read_manufacturer_string(language, &device_desc, timeout)
+                        .ok()
+                );
+                info!(
+                    "Product: {:?}",
+                    handle
+                        .read_product_string(language, &device_desc, timeout)
+                        .ok()
+                );
+                info!(
+                    "Serial Number: {:?}",
+                    handle
+                        .read_serial_number_string(language, &device_desc, timeout)
+                        .ok()
+                );
+            }
+
+            Ok((device_desc, handle))
         }
-
-        return Ok((device_desc, handle));
-    }
-
-    Err(anyhow!("could not open device"))
+    };
 }
 
 macro_rules! cast_slice_to_type {
