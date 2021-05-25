@@ -2,12 +2,13 @@ use std::{
     convert::{TryFrom, TryInto},
     fmt,
     mem::size_of,
-    sync::RwLock,
     time::Duration,
 };
 
-use once_cell::sync::Lazy;
-use rusb::{Context, Device, DeviceDescriptor, DeviceHandle, GlobalContext, Result, UsbContext};
+use rusb::{
+    Context, Device, DeviceDescriptor, DeviceHandle, DeviceList, GlobalContext, Language, Result,
+    UsbContext,
+};
 
 use bytemuck::{cast_ref, Pod, Zeroable};
 use log::{debug, error, info};
@@ -58,6 +59,38 @@ const PU_HUE_AUTO_CONTROL: u8 = 0x10;
 const PU_ANALOG_VIDEO_STANDARD_CONTROL: u8 = 0x11;
 const PU_ANALOG_LOCK_STATUS_CONTROL: u8 = 0x12;
 const PU_CONTRAST_AUTO_CONTROL: u8 = 0x13;
+
+#[derive(Debug, Copy, Clone)]
+struct Control {
+    mask: u32,
+    selector: u8,
+    name: &'static str,
+    kind: Kind,
+}
+
+impl Control {
+    pub fn is_supported(&self, flags: u32) -> bool {
+        flags & self.mask > 0
+    }
+}
+
+struct Bof([u8; 16]);
+
+impl From<Bof> for u32 {
+    fn from(bof: Bof) -> Self {
+        Self::from_le_bytes(bof.0[0..4].try_into().unwrap())
+    }
+}
+
+impl From<Bof> for i32 {
+    fn from(bof: Bof) -> Self {
+        Self::from_le_bytes(bof.0[0..4].try_into().unwrap())
+    }
+}
+
+trait ToString {}
+
+impl ToString for i32 {}
 
 const CONTROLS: [Control; 19] = [
     BRIGHTNESS,
@@ -221,34 +254,6 @@ enum Widget {
 struct ControlValue {
     control: Control,
     widget: Widget,
-}
-
-#[derive(Debug, Copy, Clone)]
-struct Control {
-    mask: u32,
-    selector: u8,
-    name: &'static str,
-    kind: Kind,
-}
-
-impl Control {
-    pub fn is_supported(&self, flags: u32) -> bool {
-        flags & self.mask > 0
-    }
-}
-
-struct Bof([u8; 16]);
-
-impl From<Bof> for u32 {
-    fn from(bof: Bof) -> Self {
-        Self::from_le_bytes(bof.0[0..4].try_into().unwrap())
-    }
-}
-
-impl From<Bof> for i32 {
-    fn from(bof: Bof) -> Self {
-        Self::from_le_bytes(bof.0[0..4].try_into().unwrap())
-    }
 }
 
 struct PU<T: UsbContext> {
@@ -464,69 +469,62 @@ struct processing_unit_descriptor {
 
 fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
-    gui();
+    let mut context = Context::new()?;
+    let device = find_device(&mut context)?;
+    let (device_desc, handle) = open_device(&device)?;
+    let pu = build_pu(device, &device_desc, handle)?;
+
+    gui(pu);
     Ok(())
 }
 
-fn build_pu_outer() -> anyhow::Result<PU<Context>> {
-    let mut context = Context::new()?;
-    let device = find_device(&mut context)?;
-    let (device_desc, handle) = open_device(&mut context, &device)?;
-    build_pu(device, &device_desc, handle)
-}
-static DA_PU: Lazy<RwLock<PU<Context>>> = Lazy::new(|| {
-    let pu = build_pu_outer();
-    if let Err(e) = pu {
-        error!("{}", e);
-        panic!("...that's fatal.");
-    } else {
-        RwLock::new(pu.unwrap())
-    }
-});
-fn gui() {
+fn gui<T: UsbContext + 'static>(pu: PU<T>) {
+    let pu = Rc::new(RefCell::new(pu));
+
     let ui = UI::init().unwrap();
 
-    // The vertical box arranges the inputs within the groups
     let mut input_vbox = VerticalBox::new(&ui);
     input_vbox.set_padded(&ui, true);
 
-    let pu = DA_PU.read().unwrap();
-    for cv in &pu.controls {
+    let pu_outer = pu.borrow();
+
+    let controls = &pu_outer.controls;
+    for cv in controls {
         let control = cv.control;
         let (widget, label_text) = match cv.widget {
             Widget::ISlider(min, cur, max) => {
                 let mut slider = Slider::new(&ui, min as i32, max as i32);
                 slider.set_value(&ui, cur as i32);
-                slider.on_changed(&ui, {
-                    let pu = DA_PU.read().unwrap();
-                    move |val| pu.write_control(control, val as u32)
+                let pu_inner = pu.clone();
+                slider.on_changed(&ui, move |val| {
+                    pu_inner.borrow().write_control(control, val as u32)
                 });
                 (iui::controls::Control::from(slider.into()), control.name)
             }
             Widget::USlider(min, cur, max) => {
                 let mut slider = Slider::new(&ui, min as i32, max as i32);
                 slider.set_value(&ui, cur as i32);
-                slider.on_changed(&ui, {
-                    let pu = DA_PU.read().unwrap();
-                    move |val| pu.write_control(control, val as u32)
+                let pu_inner = pu.clone();
+                slider.on_changed(&ui, move |val| {
+                    pu_inner.borrow().write_control(control, val as u32)
                 });
                 (slider.into(), control.name)
             }
             Widget::Stepper(min, cur, max) => {
                 let mut slider = Slider::new(&ui, min as i32, max as i32);
                 slider.set_value(&ui, cur as i32);
-                slider.on_changed(&ui, {
-                    let pu = DA_PU.read().unwrap();
-                    move |val| pu.write_control(control, val as u32)
+                let pu_inner = pu.clone();
+                slider.on_changed(&ui, move |val| {
+                    pu_inner.borrow().write_control(control, val as u32)
                 });
                 (slider.into(), control.name)
             }
             Widget::Checkbox(cur) => {
-                let mut checkbox = Checkbox::new(&ui, control.name);
+                let mut checkbox = Checkbox::new(&ui, &cv.control.name);
                 checkbox.set_checked(&ui, cur);
+                let pu_inner = pu.clone();
                 checkbox.on_toggled(&ui, {
-                    let pu = DA_PU.read().unwrap();
-                    move |val| pu.write_control(control, val as u32)
+                    move |val| pu_inner.borrow().write_control(control, val as u32)
                 });
 
                 (checkbox.into(), "")
@@ -550,11 +548,11 @@ fn gui() {
     window.show(&ui);
 
     let mut event_loop = ui.event_loop();
+
     event_loop.run(&ui);
 }
 
 fn open_device<T: UsbContext>(
-    context: &mut T,
     device: &Device<T>,
 ) -> anyhow::Result<(DeviceDescriptor, DeviceHandle<T>)> {
     return match device.open() {
