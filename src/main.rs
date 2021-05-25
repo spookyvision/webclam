@@ -5,7 +5,10 @@ use std::{
     time::Duration,
 };
 
-use rusb::{Context, Device, DeviceDescriptor, DeviceHandle, Result, UsbContext};
+use rusb::{
+    Context, Device, DeviceDescriptor, DeviceHandle, DeviceList, GlobalContext, Language, Result,
+    UsbContext,
+};
 
 use bytemuck::{cast_ref, Pod, Zeroable};
 use log::{debug, error, info};
@@ -450,19 +453,11 @@ struct processing_unit_descriptor {
 
 fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
-    let vid: u16 = 0x1bcf;
-    let pid: u16 = 0x28c4;
-
-    match Context::new() {
-        Ok(mut context) => match open_device(&mut context, vid, pid) {
-            Ok((device, device_desc, handle)) => {
-                let pu = build_pu(device, &device_desc, handle)?;
-                gui(pu);
-            }
-            Err(_) => println!("could not find device {:04x}:{:04x}", vid, pid),
-        },
-        Err(e) => panic!("could not initialize libusb: {}", e),
-    }
+    let mut context = Context::new()?;
+    let device = find_device(&mut context)?;
+    let (device_desc, handle) = open_device(&mut context, &device)?;
+    let pu = build_pu(device, &device_desc, handle)?;
+    gui(pu);
     Ok(())
 }
 
@@ -543,56 +538,42 @@ fn gui<T: UsbContext>(pu: PU<T>) {
 
 fn open_device<T: UsbContext>(
     context: &mut T,
-    vid: u16,
-    pid: u16,
-) -> anyhow::Result<(Device<T>, DeviceDescriptor, DeviceHandle<T>)> {
-    let devices = context.devices()?;
+    device: &Device<T>,
+) -> anyhow::Result<(DeviceDescriptor, DeviceHandle<T>)> {
+    if let Ok(handle) = device.open() {
+        let device_desc = device.device_descriptor()?;
+        let timeout = Duration::from_secs(1);
+        let languages = handle.read_languages(timeout)?;
 
-    for device in devices.iter() {
-        let device_desc = match device.device_descriptor() {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
+        debug!("Active configuration: {}", handle.active_configuration()?);
+        debug!("Languages: {:?}", languages);
 
-        if device_desc.vendor_id() == vid && device_desc.product_id() == pid {
-            match device.open() {
-                Ok(handle) => {
-                    let timeout = Duration::from_secs(1);
-                    let languages = handle.read_languages(timeout)?;
+        if languages.len() > 0 {
+            let language = languages[0];
 
-                    debug!("Active configuration: {}", handle.active_configuration()?);
-                    debug!("Languages: {:?}", languages);
-
-                    if languages.len() > 0 {
-                        let language = languages[0];
-
-                        info!(
-                            "Manufacturer: {:?}",
-                            handle
-                                .read_manufacturer_string(language, &device_desc, timeout)
-                                .ok()
-                        );
-                        info!(
-                            "Product: {:?}",
-                            handle
-                                .read_product_string(language, &device_desc, timeout)
-                                .ok()
-                        );
-                        info!(
-                            "Serial Number: {:?}",
-                            handle
-                                .read_serial_number_string(language, &device_desc, timeout)
-                                .ok()
-                        );
-                    }
-                    return Ok((device, device_desc, handle));
-                }
-                Err(_) => continue,
-            }
+            info!(
+                "Manufacturer: {:?}",
+                handle
+                    .read_manufacturer_string(language, &device_desc, timeout)
+                    .ok()
+            );
+            info!(
+                "Product: {:?}",
+                handle
+                    .read_product_string(language, &device_desc, timeout)
+                    .ok()
+            );
+            info!(
+                "Serial Number: {:?}",
+                handle
+                    .read_serial_number_string(language, &device_desc, timeout)
+                    .ok()
+            );
         }
+        return Ok((device_desc, handle));
     }
 
-    Err(anyhow!("no device found"))
+    Err(anyhow!("could not open device"))
 }
 
 macro_rules! cast_slice_to_type {
@@ -600,6 +581,35 @@ macro_rules! cast_slice_to_type {
         $e,
     )
     .unwrap())}
+}
+
+fn find_device<T: UsbContext>(context: &mut T) -> anyhow::Result<Device<T>> {
+    for device in context.devices()?.iter() {
+        let device_desc = match device.device_descriptor() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        for n in 0..device_desc.num_configurations() {
+            let config_desc = match device.config_descriptor(n) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            for interface in config_desc.interfaces() {
+                for interface_desc in interface.descriptors() {
+                    let class = interface_desc.class_code();
+                    let subclass = interface_desc.sub_class_code();
+
+                    if class == CC_VIDEO && subclass == SC_VIDEOCONTROL {
+                        return Ok(device);
+                    }
+                }
+            }
+        }
+    }
+
+    Err(anyhow!("could not find a camera device"))
 }
 
 fn build_pu<T: UsbContext>(
@@ -613,7 +623,7 @@ fn build_pu<T: UsbContext>(
             Err(_) => continue,
         };
 
-        println!("cx {:?}", config_desc.extra());
+        debug!("extra bytes {:?}", config_desc.extra());
 
         for interface in config_desc.interfaces() {
             for interface_desc in interface.descriptors() {
@@ -624,47 +634,45 @@ fn build_pu<T: UsbContext>(
                     continue;
                 }
                 let control_mem = control_mem.unwrap();
-                if class == CC_VIDEO {
-                    if subclass == SC_VIDEOCONTROL {
-                        let header_slice = &control_mem[0..12];
+                if class == CC_VIDEO && subclass == SC_VIDEOCONTROL {
+                    let header_slice = &control_mem[0..12];
 
-                        let vch = cast_slice_to_type!(header_slice, video_control_header);
-                        debug!("hh {:?}", vch);
+                    let vch = cast_slice_to_type!(header_slice, video_control_header);
+                    debug!("hh {:?}", vch);
 
-                        let mut read = vch.bLength as usize;
-                        while read < control_mem.len() {
-                            let generic = cast_slice_to_type!(
-                                &control_mem[read..read + size_of::<generic_descriptor>()],
-                                generic_descriptor
+                    let mut read = vch.bLength as usize;
+                    while read < control_mem.len() {
+                        let generic = cast_slice_to_type!(
+                            &control_mem[read..read + size_of::<generic_descriptor>()],
+                            generic_descriptor
+                        );
+                        if generic.bDescriptorSubType == VC_PROCESSING_UNIT {
+                            let pu = cast_slice_to_type!(
+                                &control_mem[read..read + 13],
+                                processing_unit_descriptor
                             );
-                            if generic.bDescriptorSubType == VC_PROCESSING_UNIT {
-                                let pu = cast_slice_to_type!(
-                                    &control_mem[read..read + 13],
-                                    processing_unit_descriptor
-                                );
-                                let c = &pu.bmControls;
+                            let c = &pu.bmControls;
 
-                                handle.claim_interface(interface.number()).unwrap();
+                            handle.claim_interface(interface.number()).unwrap();
 
-                                let interface = interface_desc.interface_number();
-                                let unit = pu.bUnitID;
+                            let interface = interface_desc.interface_number();
+                            let unit = pu.bUnitID;
 
-                                let flags = u32::from_le_bytes([c[0], c[1], c[2], 0]);
-                                let pu = PU::new(
-                                    handle,
-                                    CONTROLS
-                                        .iter()
-                                        .filter(|&control| control.is_supported(flags))
-                                        .collect::<Vec<&Control>>()
-                                        .as_slice(),
-                                    interface,
-                                    unit,
-                                );
-                                debug!("PU!! {:#?} {:#b}", pu, flags);
-                                return pu;
-                            }
-                            read += generic.bLength as usize;
+                            let flags = u32::from_le_bytes([c[0], c[1], c[2], 0]);
+                            let pu = PU::new(
+                                handle,
+                                CONTROLS
+                                    .iter()
+                                    .filter(|&control| control.is_supported(flags))
+                                    .collect::<Vec<&Control>>()
+                                    .as_slice(),
+                                interface,
+                                unit,
+                            );
+                            debug!("found processing unit: {:#?} {:#b}", pu, flags);
+                            return pu;
                         }
+                        read += generic.bLength as usize;
                     }
                 }
             }
