@@ -362,6 +362,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "cmake",
  "iui",
  "log",
  "pretty_env_logger",
