@@ -13,3 +13,6 @@ iui = "0.3.0"
 log = "0.4.14"
 pretty_env_logger = "0.4.0"
 rusb = "0.8.0"
+
+[build-dependencies]
+cmake = "0.1.45"
