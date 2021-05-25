@@ -6,7 +6,7 @@ use std::{
 };
 
 use rusb::{
-    Context, Device, DeviceDescriptor, DeviceHandle, DeviceList, GlobalContext, Language, Result,
+    Context, Device, DeviceDescriptor, DeviceHandle, Result,
     UsbContext,
 };
 
