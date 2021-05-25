@@ -1,19 +1,17 @@
 use std::{
+    borrow::Borrow,
     convert::{TryFrom, TryInto},
     fmt,
     mem::size_of,
     time::Duration,
 };
 
-use rusb::{
-    Context, Device, DeviceDescriptor, DeviceHandle, Result,
-    UsbContext,
-};
+use rusb::{Context, Device, DeviceDescriptor, DeviceHandle, Result, UsbContext};
 
 use bytemuck::{cast_ref, Pod, Zeroable};
 use log::{debug, error, info};
 
-use iui::controls::{Checkbox, HorizontalBox, Label, Slider, VerticalBox};
+use iui::controls::{Button, Checkbox, HorizontalBox, Label, Slider, VerticalBox};
 use iui::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -37,6 +35,7 @@ const GET_MAX: u8 = 0x83;
 // const GET_CUR_ALL: u8 = 0x91;
 // const GET_MIN_ALL: u8 = 0x92;
 // const GET_MAX_ALL: u8 = 0x93;
+const GET_DEF: u8 = 0x87;
 const SET_CUR: u8 = 0x01;
 // const SET_CUR_ALL: u8 = 0x11;
 
@@ -375,6 +374,14 @@ impl<T: UsbContext> PU<T> {
                 error!("update failed: {:?}", e);
             });
     }
+
+    fn reset(&self) {
+        for cv in &self.controls {
+            if let Ok(def) = self.read_control::<u32>(&cv.control, GET_DEF) {
+                self.write_control(cv.control, def);
+            }
+        }
+    }
 }
 #[derive(Debug)]
 struct Endpoint {
@@ -486,7 +493,7 @@ fn gui<T: UsbContext + 'static>(pu: PU<T>) {
     let mut input_vbox = VerticalBox::new(&ui);
     input_vbox.set_padded(&ui, true);
 
-    let pu_outer = pu.borrow();
+    let pu_outer = RefCell::borrow(&pu);
 
     let controls = &pu_outer.controls;
     for cv in controls {
@@ -497,7 +504,7 @@ fn gui<T: UsbContext + 'static>(pu: PU<T>) {
                 slider.set_value(&ui, cur as i32);
                 let pu_inner = pu.clone();
                 slider.on_changed(&ui, move |val| {
-                    pu_inner.borrow().write_control(control, val as u32)
+                    RefCell::borrow(&pu_inner).write_control(control, val as u32)
                 });
                 (iui::controls::Control::from(slider.into()), control.name)
             }
@@ -506,7 +513,7 @@ fn gui<T: UsbContext + 'static>(pu: PU<T>) {
                 slider.set_value(&ui, cur as i32);
                 let pu_inner = pu.clone();
                 slider.on_changed(&ui, move |val| {
-                    pu_inner.borrow().write_control(control, val as u32)
+                    RefCell::borrow(&pu_inner).write_control(control, val as u32)
                 });
                 (slider.into(), control.name)
             }
@@ -515,7 +522,7 @@ fn gui<T: UsbContext + 'static>(pu: PU<T>) {
                 slider.set_value(&ui, cur as i32);
                 let pu_inner = pu.clone();
                 slider.on_changed(&ui, move |val| {
-                    pu_inner.borrow().write_control(control, val as u32)
+                    RefCell::borrow(&pu_inner).write_control(control, val as u32)
                 });
                 (slider.into(), control.name)
             }
@@ -524,7 +531,7 @@ fn gui<T: UsbContext + 'static>(pu: PU<T>) {
                 checkbox.set_checked(&ui, cur);
                 let pu_inner = pu.clone();
                 checkbox.on_toggled(&ui, {
-                    move |val| pu_inner.borrow().write_control(control, val as u32)
+                    move |val| RefCell::borrow(&pu_inner).write_control(control, val as u32)
                 });
 
                 (checkbox.into(), "")
@@ -538,7 +545,12 @@ fn gui<T: UsbContext + 'static>(pu: PU<T>) {
         }
     }
 
+    let mut reset = Button::new(&ui, "Reset to defaults");
+    let pu_ = pu.clone();
+    reset.on_clicked(&ui, move |_| RefCell::borrow(&pu_).reset());
     // This horizontal box will arrange the two groups of controls.
+
+    input_vbox.append(&ui, reset, LayoutStrategy::Compact);
     let mut hbox = HorizontalBox::new(&ui);
     hbox.append(&ui, input_vbox, LayoutStrategy::Stretchy);
 
